@@ -288,29 +288,31 @@ class App[F[_]: Dom](using F: Async[F])
 
     drawRes <- SignallingRef.of[F, Option[Chart.DrawResult]](None).toResource
 
-    _ <- // FIX: Zoom out as much as possible and try to create points
-      store.state
-        .map(_.canvas)
-        .discrete
-        .changes(using Eq.fromUniversalEquals)
-        .unNone
-        .evalMap: canvas =>
-          F.delay:
-            canvas
-              .asInstanceOf[dom.HTMLCanvasElement]
-              .addEventListener[dom.MouseEvent](
-                "dblclick",
-                _ =>
-                  dispatcher.unsafeRunAndForget:
-                    drawRes.get.flatMap:
-                      _.foldMapM: dr =>
-                        dr.hovered.fold(
-                          store.dispatch(Action.AddPoint(dr.mouse))
-                        )(_ => F.unit)
-              )
-        .compile
-        .drain
-        .background
+    // FIX: Zoom out as much as possible and try to create points
+    // TODO: show current (x,y) somewhere in the corner
+
+    _ <- store.state
+      .map(_.canvas)
+      .discrete
+      .changes(using Eq.fromUniversalEquals)
+      .unNone
+      .evalMap: canvas =>
+        F.delay:
+          canvas
+            .asInstanceOf[dom.HTMLCanvasElement]
+            .addEventListener[dom.MouseEvent](
+              "dblclick",
+              _ =>
+                dispatcher.unsafeRunAndForget:
+                  drawRes.get.flatMap:
+                    _.foldMapM: dr =>
+                      dr.hovered.fold(
+                        store.dispatch(Action.AddPoint(dr.mouse))
+                      )(_ => F.unit)
+            )
+      .compile
+      .drain
+      .background
 
     _ <- store.state
       .map(_.canvas)

@@ -64,6 +64,31 @@ object Chart:
       dispatcher: Dispatcher[F]
   )(using F: Async[F]): Resource[F, Signal[F, Option[DrawResult]]] =
 
+    def mousePosCoordinates(xScale: Scale, yScale: Scale): Draw[Point] =
+      import Draw.*
+      for
+        mp0 <- mousePos
+        mt <- marginTransform
+        mp = mt.invert(mp0)
+      yield Point(xScale.inverse(mp.x), yScale.inverse(mp.y))
+
+    def drawCurrentCoordinates(xScale: Scale, yScale: Scale): Draw[Unit] =
+      import Draw.*
+      for
+        w <- width
+        h <- height
+        dy = 0.04 * h
+        dx = 0.04 * w
+        _ <- save
+        _ <- translate(w - 4 * dx, dy)
+        mouse <- mousePosCoordinates(xScale, yScale)
+        text = f"x=${mouse.x}%.2f, y=${mouse.y}%.2f"
+        _ <- setFillStyle(config.textColor)
+        _ <- setFont(config.tickFont)
+        _ <- fillText(text, 0, dy)
+        _ <- restore
+      yield ()
+
     def tooltip(hover: Point): Draw[Unit] =
       import Draw.*
       for
@@ -160,12 +185,10 @@ object Chart:
                     _ <- restore
                   yield ()
                 else trace.marker.draw(at)
-
           _ <- restore
+          _ <- drawCurrentCoordinates(xScale, yScale)
           hovered <- kvGet[Point]("hover").flatTap(_.foldMapM(tooltip))
-          mouse <- (mousePos, marginTransform).tupled.map: (mp, mt) =>
-            val mt0 = mt.invert(mp)
-            Point(xScale.inverse(mt0.x), yScale.inverse(mt0.y))
+          mouse <- mousePosCoordinates(xScale, yScale)
         yield DrawResult(mouse, hovered)
       else Draw.pure(DrawResult(Point(0, 0), None))
 
@@ -232,6 +255,8 @@ object Action:
 
   case class RandomizeData[F[_]]() extends Action[F]
 
+  case class AddPoint[F[_]](point: Point) extends Action[F]
+
   case class UpdatePoint[F[_]](old: Point, upd: Point) extends Action[F]
 
 trait View[F[_]] extends Buttons[State[F], Action[F]]:
@@ -254,7 +279,7 @@ trait View[F[_]] extends Buttons[State[F], Action[F]]:
             Action.SetCanvas(el.asInstanceOf[fs2.dom.HtmlCanvasElement[F]])
           )
         ),
-        "Use your mouse or touchpad to zoom and drag points 🚀.",
+        "Use your mouse or touchpad to zoom, create and drag points 🚀.",
         btn("randomize", Action.RandomizeData())
       )
     )
@@ -277,6 +302,13 @@ class App[F[_]: Dom](using F: Async[F])
         state.focus(_.chart.trace).replace(trace.some) -> F.unit
       case (Action.SetCanvas(canvas), state) =>
         state.copy(canvas = canvas.some) -> F.unit
+      case (Action.AddPoint(point), state) =>
+        state
+          .focus(_.chart.trace)
+          .replace(
+            state.chart.trace.map: trace =>
+              trace.copy(points = trace.points :+ point)
+          ) -> F.unit
       case (Action.UpdatePoint(old, upd), state) =>
         state
           .focus(_.chart.trace)
@@ -358,6 +390,29 @@ class App[F[_]: Dom](using F: Async[F])
         .compile
         .drain
         .background
+
+    _ <- store.state
+      .map(_.canvas)
+      .discrete
+      .changes(using Eq.fromUniversalEquals)
+      .unNone
+      .evalMap: canvas =>
+        F.delay:
+          canvas
+            .asInstanceOf[dom.HTMLCanvasElement]
+            .addEventListener[dom.MouseEvent](
+              "dblclick",
+              _ =>
+                dispatcher.unsafeRunAndForget:
+                  drawRes.get.flatMap:
+                    _.foldMapM: dr =>
+                      dr.hovered.fold(
+                        store.dispatch(Action.AddPoint(dr.mouse))
+                      )(_ => F.unit)
+            )
+      .compile
+      .drain
+      .background
 
     _ <- store.state
       .map(_.canvas)
